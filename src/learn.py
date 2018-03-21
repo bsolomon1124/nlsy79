@@ -1,17 +1,17 @@
+# flake8: ignore=F401,E501
 """Generate probability of divorce given marriage & individual attributes."""
 
 # TODO: feature_importances
 
-
-import itertools
 import logging
 import os
+import pickle
 
-import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt  # careful with backend in EC2
 import numpy as np
 import pandas as pd
 
-from imblearn.over_sampling import RandomOverSampler
+from imblearn import over_sampling
 
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
@@ -29,6 +29,7 @@ log = logging.getLogger(__name__)
 RANDOM_STATE = 444
 N_JOBS = -1
 TEST_SIZE = 0.33
+OVERSAMP_RATIO = 1.25  # TODO
 
 plt.ioff()
 
@@ -97,45 +98,39 @@ p = y.value_counts(normalize=True).sort_index().values
 X_train, X_test, y_train, y_test = train_test_split(
     df, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
 
-# Automatic dataframe -> numpy arr
-ros = RandomOverSampler(random_state=RANDOM_STATE)
+# Automatic DataFrame -> ndarray conversion
+# TODO: we can pass dict to `ratio=` i.e...
+# vc = y.value_counts()[0]
+#ratio = {0: vc, 1: int(OVERSAMP_RATIO * vc)}
+ros = over_sampling.RandomOverSampler(random_state=RANDOM_STATE)
 X_resampled, y_resampled = ros.fit_sample(X_train, y_train)
 
 
-select = RFE(RandomForestClassifier(n_estimators=500,
-                                    random_state=RANDOM_STATE,
-                                    n_jobs=N_JOBS, verbose=True),
-             n_features_to_select=25, step=6)
-select.fit(X_resampled, y_resampled)
-# CPU times: user 49min 39s, sys: 29.9 s, total: 50min 9s
+# with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
+#     grid = pickle.load(f)
 
-mask = select.get_support()
-np.savetxt(os.path.join(data, '%s.mask' % ts, mask, delimiter=','))  # -> float
-
-X_resampled_cut = X_resampled[:, mask]
-X_test_cut = X_test.values[:, mask]
-
-clf = RandomForestClassifier(n_estimators=1000, n_jobs=N_JOBS,
-                             verbose=True)
+# TODO: add min_samples_split to grid search
+# Account for the fact that oversampling causes duplicate records
+clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
+                             min_samples_split=10, verbose=True)
 param_grid = {'max_depth': [10, 25, None],
               'max_features': ['auto', 'sqrt', 'log2']}
-p = tuple(itertools.product(*param_grid.values()))
-logging.info('Param grid: size = %s', str(len(p)))
-logging.info('Total runs')
-cv = 4
-grid = GridSearchCV(clf, param_grid, cv=cv, return_train_score=False,
-                    verbose=True, n_jobs=N_JOBS)  # scoring='recall'
-logging.info('Total runs: %s', str(int(len(p) * cv)))
-
-grid.fit(X_resampled_cut, y_resampled)
+grid = GridSearchCV(clf, param_grid, cv=4, return_train_score=False,
+                    verbose=True, n_jobs=N_JOBS)
+grid.fit(X_resampled, y_resampled)
 
 logging.info('Best parameters: {}'.format(grid.best_params_))
 logging.info('Best cross-validation score: {:.2f}'.format(grid.best_score_))
-logging.info('Test score: {:.2f}'.format(grid.score(X_test_cut, y_test)))
+logging.info('Test score: {:.2f}'.format(grid.score(X_test, y_test)))
 logging.info('Best estimator:\n%s', grid.best_estimator_)
 
-y_pred_train = grid.predict(X_resampled_cut)
-y_pred = grid.predict(X_test_cut)
+with open(os.path.join(data, 'grid%s.pickle' % ts), 'wb') as f:
+    # NOTE: this will be pretty large (2.5 GB+)
+    # compress & archive before scp'ing.
+    pickle.dump(grid, f, pickle.HIGHEST_PROTOCOL)
+
+y_pred_train = grid.predict(X_resampled)
+y_pred = grid.predict(X_test)
 
 cols = ['pred%s' % i for i in (0, 1)]
 idx = ['act%s' % i for i in (0, 1)]
@@ -151,8 +146,8 @@ norm_test_cm = pd.DataFrame(_test_cm / _test_cm.sum(axis=1)[:, None],
                             columns=cols, index=idx)
 
 dc = DummyClassifier(strategy='most_frequent')
-dc.fit(X_test_cut, y_test)
-dummy_pred = dc.predict(X_test_cut)
+dc.fit(X_test, y_test)
+dummy_pred = dc.predict(X_test)
 _dummy_cm = confusion_matrix(y_test, dummy_pred, labels=[0, 1])
 dummy_cm = pd.DataFrame(_dummy_cm, columns=cols, index=idx)
 norm_dummy_cm = pd.DataFrame(_dummy_cm / _dummy_cm.sum(axis=1)[:, None],
@@ -161,7 +156,7 @@ norm_dummy_cm = pd.DataFrame(_dummy_cm / _dummy_cm.sum(axis=1)[:, None],
 test_fpr = test_cm.iloc[0, 1] / test_cm.iloc[0].sum()
 test_tpr = test_cm.iloc[1, 1] / test_cm.iloc[1].sum()
 
-p = grid.predict_proba(X_test_cut)[:, 1]
+p = grid.predict_proba(X_test)[:, 1]
 fpr, tpr, thresholds = roc_curve(y_test, p)
 auc_ = auc(fpr, tpr)
 

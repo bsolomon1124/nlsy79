@@ -74,11 +74,6 @@ def custom_replace(s, to_replace):
     return s.replace(new)
 
 
-# >>> pt['AGE1M'].value_counts().sort_index()
-# -3.0     260
-# -2.0      10
-
-
 def test_age_1m(ts, factor=0.10):
     """Confirm age-at-first-marriage checks out."""
     dob = pd.read_csv(os.path.join(downloads, 'DOB/DOB.csv'),
@@ -86,19 +81,13 @@ def test_age_1m(ts, factor=0.10):
     dob = pd.Series(pd.to_datetime(dict(year='19' + dob['R0000500'],
                                         month=dob['R0000300'], day=1)).values,
                     index=dob['R0000100'])
-
     nls = read.NLSDownload(ts)
-    # pt = nls.full.pivot_table(columns='myclass', values='value',
-    #                           index=['R0000100', 'year'])
     mh = marhist.MarHist()
-    # Make sure we have unique left-join keys
     assert mh.merged.duplicated(['year', 'R0000100']).sum() == 0
     age = nls.full.pivot_table(columns='myclass', values='value',
                                index=['R0000100', 'year']).loc[:, 'AGE1M']\
         .dropna()
-    # assert all((pt.index.is_unique, pt.index.is_lexsorted))
     age.index = age.index.get_level_values(0)
-
     m = get_marriage_dates(os.path.join(marstat, 'marriage.csv'))['marriage1']
     diff = age / ((m - dob).dt.days / 365)
     assert diff[np.abs(1 - diff) > factor].empty
