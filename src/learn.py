@@ -6,6 +6,7 @@
 import logging
 import os
 import pickle
+import string
 
 import matplotlib.pyplot as plt  # careful with backend in EC2
 import numpy as np
@@ -106,19 +107,23 @@ ros = over_sampling.RandomOverSampler(random_state=RANDOM_STATE)
 X_resampled, y_resampled = ros.fit_sample(X_train, y_train)
 
 
-# with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
-#     grid = pickle.load(f)
+with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
+    grid = pickle.load(f)
 
 # TODO: add min_samples_split to grid search
 # Account for the fact that oversampling causes duplicate records
 clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
                              min_samples_split=10, verbose=True)
-param_grid = {'max_depth': [10, 25, None],
+param_grid = {'max_depth': [10, 25, 40],
               'max_features': ['auto', 'sqrt', 'log2']}
 grid = GridSearchCV(clf, param_grid, cv=4, return_train_score=False,
-                    verbose=True, n_jobs=N_JOBS)
+                    verbose=True, n_jobs=N_JOBS, scoring='roc_auc')
 grid.fit(X_resampled, y_resampled)
 
+
+# Get an idea of our tree depths
+mn = np.mean([est.tree_.max_depth for est in grid.best_estimator_.estimators_])
+logging.info('Mean tree depth: {:.2f}'.format(mn))
 logging.info('Best parameters: {}'.format(grid.best_params_))
 logging.info('Best cross-validation score: {:.2f}'.format(grid.best_score_))
 logging.info('Test score: {:.2f}'.format(grid.score(X_test, y_test)))
@@ -160,6 +165,8 @@ p = grid.predict_proba(X_test)[:, 1]
 fpr, tpr, thresholds = roc_curve(y_test, p)
 auc_ = auc(fpr, tpr)
 
+# TODO: optimize ON AUC!
+ext = ''.join(np.random.choice(tuple(string.ascii_letters), size=5))
 lw = 2
 fig, ax = plt.subplots(figsize=(10, 10))
 ax.plot(fpr, tpr, lw=lw, label='ROC curve (area = %0.2f)' % auc_)
@@ -172,7 +179,7 @@ ax.set_xlabel('False Positive Rate')
 ax.set_ylabel('True Positive Rate')
 ax.set_title('Receiver Operating Characteristic')
 ax.legend(loc="lower right")
-fig.savefig(os.path.join(plots, '%s.png' % ts))
+fig.savefig(os.path.join(plots, '%s_%s.png' % (ts, ext)))
 
 
 def custom_predict(y_true, proba_1d, threshold=0.5):
