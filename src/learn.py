@@ -8,7 +8,7 @@ import os
 import pickle
 import string
 
-import matplotlib.pyplot as plt  # careful with backend in EC2
+# import matplotlib.pyplot as plt  # careful with backend in EC2
 import numpy as np
 import pandas as pd
 
@@ -31,8 +31,10 @@ RANDOM_STATE = 444
 N_JOBS = -1
 TEST_SIZE = 0.33
 OVERSAMP_RATIO = 1.25  # TODO
+EXT = ''.join(np.random.choice(tuple(string.ascii_letters), size=5))
 
-plt.ioff()
+
+# plt.ioff()
 
 
 def load(ts):
@@ -107,13 +109,13 @@ ros = over_sampling.RandomOverSampler(random_state=RANDOM_STATE)
 X_resampled, y_resampled = ros.fit_sample(X_train, y_train)
 
 
-with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
-    grid = pickle.load(f)
+# with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
+#     grid = pickle.load(f)
 
 # TODO: add min_samples_split to grid search
 # Account for the fact that oversampling causes duplicate records
 clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
-                             min_samples_split=10, verbose=True)
+                             min_samples_split=18, verbose=True)
 param_grid = {'max_depth': [10, 25, 40],
               'max_features': ['auto', 'sqrt', 'log2']}
 grid = GridSearchCV(clf, param_grid, cv=4, return_train_score=False,
@@ -129,7 +131,7 @@ logging.info('Best cross-validation score: {:.2f}'.format(grid.best_score_))
 logging.info('Test score: {:.2f}'.format(grid.score(X_test, y_test)))
 logging.info('Best estimator:\n%s', grid.best_estimator_)
 
-with open(os.path.join(data, 'grid%s.pickle' % ts), 'wb') as f:
+with open(os.path.join(data, 'grid%s_%s.pickle' % (ts, EXT)), 'wb') as f:
     # NOTE: this will be pretty large (2.5 GB+)
     # compress & archive before scp'ing.
     pickle.dump(grid, f, pickle.HIGHEST_PROTOCOL)
@@ -166,7 +168,6 @@ fpr, tpr, thresholds = roc_curve(y_test, p)
 auc_ = auc(fpr, tpr)
 
 # TODO: optimize ON AUC!
-ext = ''.join(np.random.choice(tuple(string.ascii_letters), size=5))
 lw = 2
 fig, ax = plt.subplots(figsize=(10, 10))
 ax.plot(fpr, tpr, lw=lw, label='ROC curve (area = %0.2f)' % auc_)
@@ -179,7 +180,7 @@ ax.set_xlabel('False Positive Rate')
 ax.set_ylabel('True Positive Rate')
 ax.set_title('Receiver Operating Characteristic')
 ax.legend(loc="lower right")
-fig.savefig(os.path.join(plots, '%s_%s.png' % (ts, ext)))
+fig.savefig(os.path.join(plots, '%s_%s.png' % (ts, EXT)))
 
 
 def custom_predict(y_true, proba_1d, threshold=0.5):
