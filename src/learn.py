@@ -1,41 +1,35 @@
 # flake8: ignore=F401,E501,F404
 """Generate probability of divorce given marriage & individual attributes."""
 
-# TODO: feature_importances
-# TODO: http://scikit-learn.org/stable/tutorial/machine_learning_map/index.html
-# Also look at: KNeighbors Classifier; sklearn.svm.SVC
-# (These will be very computationally expensive, though)
-
 import logging
 import os
 import pickle
 import string
 import sys
 
+# TODO: SCP matplotlibrc to AWS!!!!
+
 ec2 = sys.platform == 'linux'
 
 if ec2:
-    # Deal with barebones EC2 instance
+    # Deal with barebones EC2 instance forcing shell exit
     import matplotlib
     matplotlib.use('Agg')
     del matplotlib
 import matplotlib.pyplot as plt
 
+from imblearn.over_sampling import SMOTE
+from imblearn.pipeline import Pipeline as imbPipeline
 
-# TODO:
-# over_sampling.RandomOverSampler
-# vs.
-# over_sampling.SMOTE
-#
-
-from imblearn import over_sampling
 import numpy as np
 import pandas as pd
 
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.metrics import confusion_matrix, auc, roc_curve
-from sklearn.model_selection import GridSearchCV, train_test_split
+from sklearn.model_selection import (GridSearchCV,
+                                     train_test_split,
+                                     StratifiedKFold)
 
 from src import utils, plots, data
 
@@ -44,13 +38,13 @@ log = logging.getLogger(__name__)
 RANDOM_STATE = 444
 N_JOBS = -1
 TEST_SIZE = 0.33
-OVERSAMP_RATIO = 1.25  # TODO
 EXT = ''.join(np.random.choice(tuple(string.ascii_letters), size=5))
+logging.info('EXT: %s', EXT)
 LEGND_KWARGS = dict(facecolor='wheat', framealpha=0.75, edgecolor='black')
 
 plt.ioff()
 
-ts = '1521559186561633'  # noqa
+ts = '1521559186561633'
 df = utils.load(ts)
 
 to_dummify = [
@@ -104,23 +98,33 @@ y = df.pop('status_fwd')
 X_train, X_test, y_train, y_test = train_test_split(
     df, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
 
-# Automatic DataFrame -> ndarray conversion
-ros = over_sampling.RandomOverSampler(random_state=RANDOM_STATE)
-X_resampled, y_resampled = ros.fit_sample(X_train, y_train)
-
-# NOTE: we don't actually get a timing improvement from fitting on
-#       csc sparse array; fits faster on dense arrays in this case.
+# TODO: 100 -> 2500
 clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
-                             min_samples_split=10, verbose=True,
+                             min_samples_split=5, verbose=True,
                              random_state=RANDOM_STATE)
-param_grid = {'max_depth': [25, 40],
-              'max_features': ['sqrt', 'log2']}
-grid = GridSearchCV(clf, param_grid, return_train_score=False,
-                    verbose=True, n_jobs=N_JOBS, scoring='roc_auc')
-grid.fit(X_resampled, y_resampled)
+
+# Important that we buid oversampling into the pipeline, otherwise
+#     we're creating literal duplicates between train and validation.
+# This doesn't work with sklearn.pipeline.Pipeline because
+#     RandomOverSampler doesn't have a .tranform() method.
+#     (It has .fit_sample() or .sample().)
+pipe = imbPipeline([('oversample', SMOTE(random_state=444)), ('clf', clf)])
+
+param_grid = {'clf__max_depth': [25, 35],
+              'clf__max_features': ['sqrt', 'log2']}
+
+# NOTE: We don't actually get a timing improvement from fitting on
+#       csc sparse array; fits faster on dense arrays in this case.
+skf = StratifiedKFold()
+grid = GridSearchCV(pipe, param_grid, return_train_score=False,
+                    verbose=True, n_jobs=N_JOBS, scoring='roc_auc',
+                    cv=skf)
+grid.fit(X_train, y_train)
+
 
 # Get an idea of our tree depths
-mn = np.mean([est.tree_.max_depth for est in grid.best_estimator_.estimators_])
+mn = np.mean([est.tree_.max_depth for est in
+              grid.best_estimator_.named_steps['clf'].estimators_])
 logging.info('Mean tree depth: {:.2f}'.format(mn))
 logging.info('Best parameters: {}'.format(grid.best_params_))
 logging.info('Best cross-validation score: {:.2f}'.format(grid.best_score_))
@@ -132,13 +136,13 @@ with open(os.path.join(data, 'grid%s_%s.pickle' % (ts, EXT)), 'wb') as f:
     # compress & archive before scp'ing.
     pickle.dump(grid, f, pickle.HIGHEST_PROTOCOL)
 
-y_pred_train = grid.predict(X_resampled)
+y_pred_train = grid.predict(X_train)
 y_pred = grid.predict(X_test)
 
 cols = ['pred%s' % i for i in (0, 1)]
 idx = ['act%s' % i for i in (0, 1)]
 
-_train_cm = confusion_matrix(y_resampled, y_pred_train)
+_train_cm = confusion_matrix(y_train, y_pred_train)
 train_cm = pd.DataFrame(_train_cm, columns=cols, index=idx)
 norm_train_cm = pd.DataFrame(_train_cm / _train_cm.sum(),
                              columns=cols, index=idx)
@@ -223,6 +227,7 @@ rec = cust_recall(y_test, pred_2d)
 prec = cust_precision(y_test, pred_2d)
 f1 = 2 * (rec * prec) / (rec + prec)
 
+plt.close('all'); plt.clf()
 fig, ax = plt.subplots(figsize=(6, 4))
 ax.plot(thresholds, rec, label='Recall')
 ax.plot(thresholds, prec, label='Precision')
@@ -234,3 +239,10 @@ ax.set_xlim([0.0, 0.50])
 ax.set_ylim([0.0, 1.05])
 ax.legend(loc=(0.1, 0.60), **LEGND_KWARGS)
 plt.savefig(os.path.join(plots, 'pr%s_%s.png' % (ts, EXT)))
+
+logging.info('Recall & Precision at F1 Argmax: %s, %s',
+             rec[f1.argmax()], prec[f1.argmax()])
+
+fi = grid.best_estimator_.named_steps['clf'].feature_importances_
+logging.info('Feature importances:\n%s',
+             pd.Series(fi, index=df.columns).nlargest(n=15))
