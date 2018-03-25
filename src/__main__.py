@@ -248,7 +248,7 @@ def main(ts):
     pt.columns = pt.columns.add_categories(['DD_%s' % col for col in to_diff])
     grouped = pt.groupby(level=0, sort=False)
     for col in to_diff:
-        pt.loc[:, 'DD_%s' % col] = grouped[col].diff()
+        pt.loc[:, 'DD_%s' % col] = grouped[col].pct_change()
 
     # Merge on (R0000100, year)
     # ---------------------------------------------------------------------
@@ -257,9 +257,8 @@ def main(ts):
     assert mh.merged.duplicated(['year', 'R0000100']).sum() == 0
 
     pt.columns = pt.columns.add_categories('fwd_status')
-    full = mh.merged.set_index(['R0000100', 'year']).merge(pt, how='left',
-                                                           left_index=True,
-                                                           right_index=True)\
+    full = mh.merged.set_index(['R0000100', 'year'])\
+        .merge(pt, how='left', left_index=True, right_index=True)\
         .dropna()
 
     # We don't need to worry about CASEID/R0000100; it's in the Index

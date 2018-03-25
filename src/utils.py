@@ -5,10 +5,14 @@ import os
 import numpy as np
 import pandas as pd
 
-from src import downloads, marstat, read, marhist
+from src import downloads, marstat, read, marhist, data
 from src.marhist import get_marriage_dates
 
 log = logging.getLogger(__name__)
+
+
+def load(ts):
+    return pd.read_pickle(os.path.join(data, '%s.pickle' % ts))
 
 
 def cust_cut(s, bins, inval=None, fill=0., exclude=None):

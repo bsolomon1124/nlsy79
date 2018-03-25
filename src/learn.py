@@ -1,29 +1,43 @@
-# flake8: ignore=F401,E501
+# flake8: ignore=F401,E501,F404
 """Generate probability of divorce given marriage & individual attributes."""
 
 # TODO: feature_importances
+# TODO: http://scikit-learn.org/stable/tutorial/machine_learning_map/index.html
+# Also look at: KNeighbors Classifier; sklearn.svm.SVC
+# (These will be very computationally expensive, though)
 
 import logging
 import os
 import pickle
 import string
+import sys
 
-# import matplotlib.pyplot as plt  # careful with backend in EC2
+ec2 = sys.platform == 'linux'
+
+if ec2:
+    # Deal with barebones EC2 instance
+    import matplotlib
+    matplotlib.use('Agg')
+    del matplotlib
+import matplotlib.pyplot as plt
+
+
+# TODO:
+# over_sampling.RandomOverSampler
+# vs.
+# over_sampling.SMOTE
+#
+
+from imblearn import over_sampling
 import numpy as np
 import pandas as pd
 
-from imblearn import over_sampling
-
 from sklearn.dummy import DummyClassifier
 from sklearn.ensemble import RandomForestClassifier
-from sklearn.feature_selection import RFE, SelectFpr, SelectFromModel
-from sklearn.linear_model import LogisticRegression, RidgeClassifier
-from sklearn.metrics import accuracy_score, confusion_matrix, precision_score, f1_score, auc, recall_score, roc_curve
+from sklearn.metrics import confusion_matrix, auc, roc_curve
 from sklearn.model_selection import GridSearchCV, train_test_split
-from sklearn.pipeline import Pipeline
-from sklearn.preprocessing import MinMaxScaler, Normalizer, StandardScaler
 
-from src import data, plots
+from src import utils, plots, data
 
 log = logging.getLogger(__name__)
 
@@ -32,21 +46,12 @@ N_JOBS = -1
 TEST_SIZE = 0.33
 OVERSAMP_RATIO = 1.25  # TODO
 EXT = ''.join(np.random.choice(tuple(string.ascii_letters), size=5))
+LEGND_KWARGS = dict(facecolor='wheat', framealpha=0.75, edgecolor='black')
 
-
-# plt.ioff()
-
-
-def load(ts):
-    return pd.read_pickle(os.path.join(data, '%s.pickle' % ts))
+plt.ioff()
 
 ts = '1521559186561633'  # noqa
-df = load(ts)
-
-
-def vc(df, col):
-    return df[col].value_counts()
-
+df = utils.load(ts)
 
 to_dummify = [
     'AFQT-1',
@@ -89,39 +94,30 @@ to_dummify = [
     'WORKER_CLASS'
     ]
 
-df_ = df.copy()
 df = pd.get_dummies(df, columns=to_dummify, drop_first=True)
 y = df.pop('status_fwd')
 
 # Upsample -
 # 1. Stratified train-test split
 # 2. Upsample X/y train
-p = y.value_counts(normalize=True).sort_index().values
 
 X_train, X_test, y_train, y_test = train_test_split(
     df, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
 
 # Automatic DataFrame -> ndarray conversion
-# TODO: we can pass dict to `ratio=` i.e...
-# vc = y.value_counts()[0]
-#ratio = {0: vc, 1: int(OVERSAMP_RATIO * vc)}
 ros = over_sampling.RandomOverSampler(random_state=RANDOM_STATE)
 X_resampled, y_resampled = ros.fit_sample(X_train, y_train)
 
-
-# with open(os.path.join(data, 'grid%s.pickle' % ts), 'rb') as f:
-#     grid = pickle.load(f)
-
-# TODO: add min_samples_split to grid search
-# Account for the fact that oversampling causes duplicate records
+# NOTE: we don't actually get a timing improvement from fitting on
+#       csc sparse array; fits faster on dense arrays in this case.
 clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
-                             min_samples_split=18, verbose=True)
-param_grid = {'max_depth': [10, 25, 40],
-              'max_features': ['auto', 'sqrt', 'log2']}
-grid = GridSearchCV(clf, param_grid, cv=4, return_train_score=False,
+                             min_samples_split=10, verbose=True,
+                             random_state=RANDOM_STATE)
+param_grid = {'max_depth': [25, 40],
+              'max_features': ['sqrt', 'log2']}
+grid = GridSearchCV(clf, param_grid, return_train_score=False,
                     verbose=True, n_jobs=N_JOBS, scoring='roc_auc')
 grid.fit(X_resampled, y_resampled)
-
 
 # Get an idea of our tree depths
 mn = np.mean([est.tree_.max_depth for est in grid.best_estimator_.estimators_])
@@ -144,12 +140,12 @@ idx = ['act%s' % i for i in (0, 1)]
 
 _train_cm = confusion_matrix(y_resampled, y_pred_train)
 train_cm = pd.DataFrame(_train_cm, columns=cols, index=idx)
-norm_train_cm = pd.DataFrame(_train_cm / _train_cm.sum(axis=1)[:, None],
+norm_train_cm = pd.DataFrame(_train_cm / _train_cm.sum(),
                              columns=cols, index=idx)
 
 _test_cm = confusion_matrix(y_test, y_pred)
 test_cm = pd.DataFrame(_test_cm, columns=cols, index=idx)
-norm_test_cm = pd.DataFrame(_test_cm / _test_cm.sum(axis=1)[:, None],
+norm_test_cm = pd.DataFrame(_test_cm / _test_cm.sum(),
                             columns=cols, index=idx)
 
 dc = DummyClassifier(strategy='most_frequent')
@@ -157,38 +153,84 @@ dc.fit(X_test, y_test)
 dummy_pred = dc.predict(X_test)
 _dummy_cm = confusion_matrix(y_test, dummy_pred, labels=[0, 1])
 dummy_cm = pd.DataFrame(_dummy_cm, columns=cols, index=idx)
-norm_dummy_cm = pd.DataFrame(_dummy_cm / _dummy_cm.sum(axis=1)[:, None],
+norm_dummy_cm = pd.DataFrame(_dummy_cm / _dummy_cm.sum(),
                              columns=cols, index=idx)
 
 test_fpr = test_cm.iloc[0, 1] / test_cm.iloc[0].sum()
 test_tpr = test_cm.iloc[1, 1] / test_cm.iloc[1].sum()
 
 p = grid.predict_proba(X_test)[:, 1]
-fpr, tpr, thresholds = roc_curve(y_test, p)
+fpr, tpr, _ = roc_curve(y_test, p)
 auc_ = auc(fpr, tpr)
 
-# TODO: optimize ON AUC!
 lw = 2
-fig, ax = plt.subplots(figsize=(10, 10))
+teal = '#%02x%02x%02x' % (128, 191, 183)
+fig, ax = plt.subplots(figsize=(6, 6))
 ax.plot(fpr, tpr, lw=lw, label='ROC curve (area = %0.2f)' % auc_)
-ax.plot([0, 1], [0, 1], lw=lw, linestyle='--')
+ax.plot([0, 1], [0, 1], lw=lw, linestyle='--', color=teal)
 ax.plot(test_fpr, test_tpr, marker='D', linestyle='', markersize=10,
-        color='green')
+        color='red')
 ax.set_xlim([0.0, 1.0])
 ax.set_ylim([0.0, 1.05])
 ax.set_xlabel('False Positive Rate')
 ax.set_ylabel('True Positive Rate')
 ax.set_title('Receiver Operating Characteristic')
-ax.legend(loc="lower right")
+ax.legend(loc="lower right", **LEGND_KWARGS)
 fig.savefig(os.path.join(plots, '%s_%s.png' % (ts, EXT)))
 
 
 def custom_predict(y_true, proba_1d, threshold=0.5):
     assert proba_1d.ndim == 1
-    return np.where(proba_1d > threshold, 1., 0.)
+    if isinstance(threshold, np.ndarray):
+        threshold = threshold[:, None]
+    return np.where(proba_1d >= threshold, 1., 0.)
 
 
-# TODO: what does confusion matrix look like at various thresholds?
-# i.e.
-# pred_cust = custom_predict(y_test, p, threshold=0.2)
-# confusion_matrix(y_true, pred_cust)
+pred_cust = custom_predict(y_test, p, threshold=0.25)
+_cust_cm = confusion_matrix(y_test, pred_cust)
+cust_cm = pd.DataFrame(_cust_cm, columns=cols, index=idx)
+norm_cust_cm = pd.DataFrame(_cust_cm / _cust_cm.sum(),
+                            columns=cols, index=idx)
+cust_fpr = cust_cm.iloc[0, 1] / cust_cm.iloc[0].sum()
+cust_tpr = cust_cm.iloc[1, 1] / cust_cm.iloc[1].sum()
+
+
+# Precision-recall curve;
+# One vector of predictions for each threshold.
+thresholds = np.arange(0., 0.51, 0.01)
+pred_2d = custom_predict(y_test, p, thresholds)
+
+
+def cust_recall(y_true, pred_2d):
+    """Broadcasted recall score with 2d inputs."""
+    # tp / (tp + fn)
+    y_true = np.asanyarray(y_true)
+    tp = ((pred_2d == 1) & (y_true == 1)).sum(axis=1)
+    fn = ((pred_2d == 0) & (y_true == 1)).sum(axis=1)
+    return tp / (tp + fn)
+
+
+def cust_precision(y_true, pred_2d):
+    """Broadcasted precision score with 2d inputs."""
+    # tp / (tp + fp)
+    y_true = np.asanyarray(y_true)
+    tp = ((pred_2d == 1) & (y_true == 1)).sum(axis=1)
+    fp = ((pred_2d == 1) & (y_true == 0)).sum(axis=1)
+    return tp / (tp + fp)
+
+
+rec = cust_recall(y_test, pred_2d)
+prec = cust_precision(y_test, pred_2d)
+f1 = 2 * (rec * prec) / (rec + prec)
+
+fig, ax = plt.subplots(figsize=(6, 4))
+ax.plot(thresholds, rec, label='Recall')
+ax.plot(thresholds, prec, label='Precision')
+ax.plot(thresholds, f1, label='F1 Score')
+ax.set_title('Recall, Precision, & F1 as a Function of Threshold')
+ax.set_ylabel('Score')
+ax.set_xlabel('Decision Threshold')
+ax.set_xlim([0.0, 0.50])
+ax.set_ylim([0.0, 1.05])
+ax.legend(loc=(0.1, 0.60), **LEGND_KWARGS)
+plt.savefig(os.path.join(plots, 'pr%s_%s.png' % (ts, EXT)))
