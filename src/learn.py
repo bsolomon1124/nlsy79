@@ -239,3 +239,18 @@ logging.info('Recall & Precision at F1 Argmax: %s, %s',
 fi = grid.best_estimator_.named_steps['clf'].feature_importances_
 logging.info('Feature importances:\n%s',
              pd.Series(fi, index=df.columns).nlargest(n=15))
+
+
+# Take those correctly predicted
+# with highest probabilities
+n = 100
+correct = X_test.loc[np.logical_and(y_test, y_pred)]
+cp = grid.predict_proba(correct)[:, 1]
+highest_n_idx = (-cp).argsort()[:100]
+highp = cp[highest_n_idx]
+
+highrisk = correct.iloc[highest_n_idx].assign(PROB=highp)
+
+
+def rslice(n):
+    return X_test.loc[(n, slice(None)), :]
