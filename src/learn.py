@@ -7,8 +7,6 @@ import pickle
 import string
 import sys
 
-# TODO: SCP matplotlibrc to AWS!!!!
-
 ec2 = sys.platform == 'linux'
 
 if ec2:
@@ -31,7 +29,7 @@ from sklearn.model_selection import (GridSearchCV,
                                      train_test_split,
                                      StratifiedKFold)
 
-from src import utils, plots, data
+from src import data, plots, utils
 
 log = logging.getLogger(__name__)
 
@@ -44,7 +42,7 @@ LEGND_KWARGS = dict(facecolor='wheat', framealpha=0.75, edgecolor='black')
 
 plt.ioff()
 
-ts = '1521559186561633'
+ts = '1522065627324378'
 df = utils.load(ts)
 
 to_dummify = [
@@ -88,17 +86,12 @@ to_dummify = [
     'WORKER_CLASS'
     ]
 
-df = pd.get_dummies(df, columns=to_dummify, drop_first=True)
+df = pd.get_dummies(df, columns=to_dummify, drop_first=True).dropna()
 y = df.pop('status_fwd')
-
-# Upsample -
-# 1. Stratified train-test split
-# 2. Upsample X/y train
 
 X_train, X_test, y_train, y_test = train_test_split(
     df, y, test_size=TEST_SIZE, random_state=RANDOM_STATE, stratify=y)
 
-# TODO: 100 -> 2500
 clf = RandomForestClassifier(n_estimators=2500, n_jobs=N_JOBS,
                              min_samples_split=5, verbose=True,
                              random_state=RANDOM_STATE)
@@ -227,7 +220,7 @@ rec = cust_recall(y_test, pred_2d)
 prec = cust_precision(y_test, pred_2d)
 f1 = 2 * (rec * prec) / (rec + prec)
 
-plt.close('all'); plt.clf()
+plt.close('all')
 fig, ax = plt.subplots(figsize=(6, 4))
 ax.plot(thresholds, rec, label='Recall')
 ax.plot(thresholds, prec, label='Precision')

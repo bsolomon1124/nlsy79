@@ -120,15 +120,12 @@ def fwd_binary_status(frame, n: int) -> pd.DataFrame:
     return fwd
 
 
-# Assume marriage status (survey) is of 12-31
 def yearend_status(frame) -> pd.DataFrame:
     res = get_marriage_history()
     res = res[res.index.month == 12]
     res.index = range(res.index.year.min(), res.index.year.max() + 1)
     return res.stack().reset_index().rename(columns={'level_0': 'year',
                                                      0: 'status'})
-
-# TODO: we need to get prior marriage status here before merging/dropping
 
 
 def merge(bin_status, y_end_status) -> pd.DataFrame:

@@ -6,15 +6,12 @@ import os
 import numpy as np
 import pandas as pd
 
-from src import read, marhist, data
+from src import data, marhist, marstat, read
 from src.mapping import mapper, religions
 from src.utils import custom_replace, cust_qcut, cust_cut
+from src.marhist import get_marriage_dates
 
 log = logging.getLogger(__name__)
-
-# ts = '1521559186561633'
-
-# TODO: deal with skewed variables in binning
 
 
 def main(ts):
@@ -270,6 +267,21 @@ def main(ts):
         'FFER-142',
         'MFER-31'
         ]
+
+    # A few last derivations
+    m = get_marriage_dates(os.path.join(marstat, 'marriage.csv'))
+    marnum = full[['AGEATINT']].reset_index().merge(m.reset_index(),
+                                                    on='R0000100',
+                                                    how='left')
+    is_second_marriage = (marnum.marriage2.dt.year < marnum.year).values
+    full['MARLENGTH'] = np.where(is_second_marriage,
+                                 marnum.year - marnum.marriage2.dt.year,
+                                 marnum.year - marnum.marriage1.dt.year)
+    full['SECOND_MARRIAGE'] = is_second_marriage
+    full['AGEAT_CUR_MARRIAGE'] = full['AGEATINT'] - full['MARLENGTH']
+    # Missing a handful of marriage1 dates
+    full.dropna(inplace=True)
+
     full.drop(drop, axis=1, inplace=True)
     dtypes = full.get_dtype_counts().to_string().replace('\n', '\t')
     path = os.path.join(data, '%s.pickle' % ts)
